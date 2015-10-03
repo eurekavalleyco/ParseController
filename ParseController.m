@@ -14,13 +14,15 @@
 #import "AKDebugger.h"
 #import "AKGenerics.h"
 #import <Parse/Parse.h>
-#import "AKPrivateInfo.h"
+#import "PrivateInfo.h"
 #import "AKSystemInfo.h"
 
 #pragma mark - // DEFINITIONS (Private) //
 
 #define PFINSTALLATION_KEY_PUSHNOTIFICATIONSON @"pushNotificationsOn"
 #define PFINSTALLATION_KEY_CURRENTACCOUNT @"currentAccount"
+
+#define PUSH_KEY_INSTALLATIONID @"installationId"
 
 @interface ParseController ()
 @property (nonatomic, strong) NSThread *threadSave;
@@ -193,9 +195,18 @@
     [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeSetup customCategories:@[AKD_PARSE] message:nil];
     
     [ParseController sharedController];
-    [Parse setApplicationId:[AKPrivateInfo parseApplicationId] clientKey:[AKPrivateInfo parseClientKey]];
+    [Parse setApplicationId:[PrivateInfo parseApplicationId] clientKey:[PrivateInfo parseClientKey]];
     [PFUser enableRevocableSessionInBackground];
     [PFAnalytics trackAppOpenedWithLaunchOptions:launchOptions];
+}
+
++ (void)setDeviceTokenFromData:(NSData *)deviceToken
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeSetup customCategories:@[AKD_PARSE] message:nil];
+    
+    PFInstallation *currentInstallation = [ParseController currentInstallation];
+    [currentInstallation setDeviceTokenFromData:deviceToken];
+    [ParseController saveObjectEventually:currentInstallation withCompletion:nil];
 }
 
 + (void)trackAppOpenedWithLaunchOptions:(NSDictionary *)launchOptions
@@ -203,6 +214,17 @@
     [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeSetup customCategories:@[AKD_PARSE] message:nil];
     
     [PFAnalytics trackAppOpenedWithLaunchOptions:launchOptions];
+}
+
+#pragma mark - // PUBLIC METHODS (General) //
+
++ (NSDate *)convertJSONDate:(NSString *)jsonDate
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeUnspecified customCategories:nil message:nil];
+    
+    NSDateFormatter *dateFormat = [[NSDateFormatter alloc] init];
+    [dateFormat setDateFormat:@"yyyy-MM-dd'T'HH:mm:ss.SSSz"];
+    return [dateFormat dateFromString:jsonDate];
 }
 
 #pragma mark - // PUBLIC METHODS (Installation) //
@@ -227,6 +249,19 @@
 
 #pragma mark - // PUBLIC METHODS (Push Notifications) //
 
++ (BOOL)pushNotificationsOn
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeGetter customCategories:@[AKD_PUSH_NOTIFICATIONS] message:nil];
+    
+    PFInstallation *currentInstallation = [ParseController currentInstallation];
+    if (!currentInstallation) return NO;
+    
+    NSNumber *onNumber = [currentInstallation objectForKey:PFINSTALLATION_KEY_PUSHNOTIFICATIONSON];
+    if (!onNumber) return NO;
+    
+    return [onNumber boolValue];
+}
+
 + (void)setPushNotificationsOn:(BOOL)on
 {
     [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeSetter customCategories:@[AKD_PARSE] message:nil];
@@ -241,17 +276,21 @@
     [AKGenerics postNotificationName:NOTIFICATION_PARSECONTROLLER_PUSHNOTIFICATIONSON_DID_CHANGE object:nil userInfo:[NSDictionary dictionaryWithObject:onNumber forKey:NOTIFICATION_OBJECT_KEY]];
 }
 
-+ (BOOL)pushNotificationsOn
++ (BOOL)shouldProcessPushNotificationWithData:(NSDictionary *)notificationPayload
 {
-    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeGetter customCategories:@[AKD_PUSH_NOTIFICATIONS] message:nil];
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeValidator customCategories:@[AKD_PUSH_NOTIFICATIONS] message:nil];
     
-    PFInstallation *currentInstallation = [ParseController currentInstallation];
-    if (!currentInstallation) return NO;
+    NSString *installationId = [notificationPayload objectForKey:PUSH_KEY_INSTALLATIONID];
+    if ([installationId isEqualToString:[ParseController currentInstallation].objectId]) return NO;
     
-    NSNumber *onNumber = [currentInstallation objectForKey:PFINSTALLATION_KEY_PUSHNOTIFICATIONSON];
-    if (!onNumber) return NO;
+    return YES;
+}
+
++ (void)handlePush:(NSDictionary *)notificationPayload
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeUnspecified customCategories:nil message:nil];
     
-    return [onNumber boolValue];
+    [PFPush handlePush:notificationPayload];
 }
 
 #pragma mark - // PUBLIC METHODS (Accounts) //

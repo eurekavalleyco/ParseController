@@ -39,7 +39,12 @@
 // SETUP //
 
 + (void)setupWithLaunchOptions:(NSDictionary *)launchOptions;
++ (void)setDeviceTokenFromData:(NSData *)deviceToken;
 + (void)trackAppOpenedWithLaunchOptions:(NSDictionary *)launchOptions;
+
+// GENERAL //
+
++ (NSDate *)convertJSONDate:(NSString *)jsonDate;
 
 // INSTALLATION //
 
@@ -48,8 +53,10 @@
 
 // PUSH NOTIFICATIONS //
 
-+ (void)setPushNotificationsOn:(BOOL)on;
 + (BOOL)pushNotificationsOn;
++ (void)setPushNotificationsOn:(BOOL)on;
++ (BOOL)shouldProcessPushNotificationWithData:(NSDictionary *)notificationPayload;
++ (void)handlePush:(NSDictionary *)notificationPayload;
 
 // ACCOUNTS //
 
