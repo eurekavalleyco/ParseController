@@ -14,20 +14,45 @@
 #import "AKDebugger.h"
 #import "AKGenerics.h"
 #import <Parse/Parse.h>
+#import "AKSystemInfo.h"
 #import "PrivateInfo.h"
 #import "AKSystemInfo.h"
 
+#pragma mark - // PROTOCOLS (Private) //
+
+@protocol Save <NSObject>
+- (BOOL)save:(NSError **)error;
+@end
+
 #pragma mark - // DEFINITIONS (Private) //
+
+#define CLOUDCODE_FUNCTION_ACCOUNTDIDLOGIN @"accountDidLogIn"
+#define CLOUDCODE_FUNCTION_ACCOUNTWILLLOGOUT @"accountWillLogOut"
+#define CLOUDCODE_PARAM_IPADDRESS @"ipAddress"
 
 #define PFINSTALLATION_KEY_PUSHNOTIFICATIONSON @"pushNotificationsOn"
 #define PFINSTALLATION_KEY_CURRENTACCOUNT @"currentAccount"
+#define PFINSTALLATION_KEY_IPADDRESS_CURRENT @"currentIpAddress"
+#define PFINSTALLATION_KEY_IPADDRESSES_ALL @"allIpAddresses"
 
 #define PUSH_KEY_INSTALLATIONID @"installationId"
 
+#define QUEUEDQUERY_KEY_TYPE @"queryType"
+#define QUEUEDQUERY_KEY_QUERY @"query"
+#define QUEUEDQUERY_KEY_COMPLETION @"completion"
+
+typedef enum {
+    PFQueryFetchAll,
+    PFQueryFetchFirst,
+    PFQueryCount
+} PFQueryType;
+
 @interface ParseController ()
 @property (nonatomic, strong) NSThread *threadSave;
+@property (nonatomic, strong) NSThread *threadFetch;
 @property (nonatomic, strong) NSMutableArray *unsavedObjects;
-@property (nonatomic, strong) NSMutableArray *completionBlocks;
+@property (nonatomic, strong) NSMutableArray *queuedQueries;
+@property (nonatomic, strong) NSMutableArray *objectCompletionBlocks;
 @property (nonatomic, strong) PFInstallation *currentInstallation;
 @property (nonatomic, strong) PFUser *currentAccount;
 
@@ -37,15 +62,23 @@
 - (void)setup;
 - (void)teardown;
 
+// OBSERVERS //
+
+- (void)addObserversToSystemInfo;
+- (void)removeObserversFromSystemInfo;
+
 // RESPONDERS //
 
 - (void)internetStatusDidChange:(NSNotification *)notification;
+- (void)publicIpAddressDidChange:(NSNotification *)notification;
 
 // CONVENIENCE //
 
 + (NSThread *)threadSave;
++ (NSThread *)threadFetch;
 + (NSMutableArray *)unsavedObjects;
-+ (NSMutableArray *)completionBlocks;
++ (NSMutableArray *)queuedQueries;
++ (NSMutableArray *)objectCompletionBlocks;
 + (PFInstallation *)currentInstallation;
 + (void)setCurrentAccount:(PFUser *)currentAccount;
 
@@ -56,8 +89,11 @@
 // SAVE //
 
 - (void)save;
-+ (void)saveObjectEventually:(PFObject *)object withCompletion:(void (^)(PFObject *))completionBlock;
-+ (void)saveFileEventually:(PFFile *)file withCompletion:(void (^)(PFFile *))completionBlock;
+
+// FETCH //
+
+- (void)fetch;
++ (void)queueQuery:(PFQuery *)query ofType:(PFQueryType)queryType withCompletion:(id)completionBlock;
 
 @end
 
@@ -66,8 +102,10 @@
 #pragma mark - // SETTERS AND GETTERS //
 
 @synthesize threadSave = _threadSave;
+@synthesize threadFetch = _threadFetch;
 @synthesize unsavedObjects = _unsavedObjects;
-@synthesize completionBlocks = _completionBlocks;
+@synthesize queuedQueries = _queuedQueries;
+@synthesize objectCompletionBlocks = _objectCompletionBlocks;
 @synthesize currentInstallation = _currentInstallation;
 @synthesize currentAccount = _currentAccount;
 
@@ -78,8 +116,19 @@
     if (_threadSave) return _threadSave;
     
     _threadSave = [[NSThread alloc] initWithTarget:self selector:@selector(save) object:nil];
-    [_threadSave setName:@"com.eurekavalley.Kaiten.ParseController.threadSave"];
+    [_threadSave setName:[NSString stringWithFormat:@"%@.%@.%@", [AKSystemInfo bundleIdentifier], NSStringFromClass([self class]), NSStringFromSelector(@selector(threadSave))]];
     return _threadSave;
+}
+
+- (NSThread *)threadFetch
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeGetter customCategories:nil message:nil];
+    
+    if (_threadFetch) return _threadFetch;
+    
+    _threadFetch = [[NSThread alloc] initWithTarget:self selector:@selector(fetch) object:nil];
+    [_threadFetch setName:[NSString stringWithFormat:@"%@.%@.%@", [AKSystemInfo bundleIdentifier], NSStringFromClass([self class]), NSStringFromSelector(@selector(threadFetch))]];
+    return _threadFetch;
 }
 
 - (NSMutableArray *)unsavedObjects
@@ -92,14 +141,24 @@
     return _unsavedObjects;
 }
 
-- (NSMutableArray *)completionBlocks
+- (NSMutableArray *)queuedQueries
 {
     [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeGetter customCategories:nil message:nil];
     
-    if (_completionBlocks) return _completionBlocks;
+    if (_queuedQueries) return _queuedQueries;
     
-    _completionBlocks = [NSMutableArray array];
-    return _completionBlocks;
+    _queuedQueries = [NSMutableArray array];
+    return _queuedQueries;
+}
+
+- (NSMutableArray *)objectCompletionBlocks
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeGetter customCategories:nil message:nil];
+    
+    if (_objectCompletionBlocks) return _objectCompletionBlocks;
+    
+    _objectCompletionBlocks = [NSMutableArray array];
+    return _objectCompletionBlocks;
 }
 
 - (PFInstallation *)currentInstallation
@@ -109,6 +168,13 @@
     if (_currentInstallation) return _currentInstallation;
     
     _currentInstallation = [PFInstallation currentInstallation];
+    NSString *ipAddress = [AKSystemInfo publicIpAddress];
+    if (ipAddress)
+    {
+        [_currentInstallation addUniqueObject:ipAddress forKey:PFINSTALLATION_KEY_IPADDRESSES_ALL];
+        [_currentInstallation setObject:ipAddress forKey:PFINSTALLATION_KEY_IPADDRESS_CURRENT];
+        [ParseController saveObjectEventually:_currentInstallation withCompletion:nil];
+    }
     return _currentInstallation;
 }
 
@@ -130,19 +196,25 @@
     
     _currentAccount = currentAccount;
     
-    if (![AKGenerics object:currentAccount isEqualToObject:[self.currentAccount objectForKey:PFINSTALLATION_KEY_CURRENTACCOUNT]])
+    if (![AKGenerics object:currentAccount isEqualToObject:[self.currentInstallation objectForKey:PFINSTALLATION_KEY_CURRENTACCOUNT]])
     {
-        [self.currentInstallation setObject:currentAccount forKey:PFINSTALLATION_KEY_CURRENTACCOUNT];
+        if (currentAccount)
+        {
+            [self.currentInstallation setObject:currentAccount forKey:PFINSTALLATION_KEY_CURRENTACCOUNT];
+        }
+        else
+        {
+            [self.currentInstallation removeObjectForKey:PFINSTALLATION_KEY_CURRENTACCOUNT];
+        }
         [ParseController saveObjectEventually:self.currentInstallation withCompletion:nil];
     }
     
-    NSMutableDictionary *userInfo = [[NSMutableDictionary alloc] init];
+    NSMutableDictionary *userInfo = [NSMutableDictionary dictionary];
     if (currentAccount) [userInfo setObject:currentAccount forKey:NOTIFICATION_OBJECT_KEY];
     [AKGenerics postNotificationName:NOTIFICATION_PARSECONTROLLER_CURRENTACCOUNT_DID_CHANGE object:nil userInfo:userInfo];
-    if ([newUsername isEqualToString:oldUsername]) return;
+    if ([AKGenerics object:oldUsername isEqualToObject:newUsername]) return;
     
-    userInfo = [[NSMutableDictionary alloc] init];
-    if (oldUsername) [userInfo setObject:oldUsername forKey:NOTIFICATION_OLD_KEY];
+    userInfo = [NSMutableDictionary dictionary];
     if (newUsername) [userInfo setObject:newUsername forKey:NOTIFICATION_OBJECT_KEY];
     [AKGenerics postNotificationName:NOTIFICATION_PARSECONTROLLER_CURRENTACCOUNT_USERNAME_DID_CHANGE object:nil userInfo:userInfo];
 }
@@ -229,6 +301,13 @@
 
 #pragma mark - // PUBLIC METHODS (Installation) //
 
++ (NSString *)installationId
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeGetter customCategories:@[AKD_PARSE] message:nil];
+    
+    return [[ParseController currentInstallation] installationId];
+}
+
 + (NSArray *)channels
 {
     [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeGetter customCategories:@[AKD_PARSE] message:nil];
@@ -295,11 +374,11 @@
 
 #pragma mark - // PUBLIC METHODS (Accounts) //
 
-+ (id <AccountProtocol>)currentAccount
++ (PFUser *)currentAccount
 {
     [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeGetter customCategories:@[AKD_ACCOUNTS] message:nil];
     
-    return (id <AccountProtocol>)[[ParseController sharedController] currentAccount];
+    return [[ParseController sharedController] currentAccount];
 }
 
 + (BOOL)signInWithUsername:(NSString *)username password:(NSString *)password
@@ -318,6 +397,11 @@
         return NO;
     }
     
+    [PFCloud callFunction:CLOUDCODE_FUNCTION_ACCOUNTDIDLOGIN withParameters:@{CLOUDCODE_PARAM_IPADDRESS:[AKSystemInfo publicIpAddress]} error:&error];
+    if (error)
+    {
+        [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeError methodType:AKMethodTypeAction customCategories:@[AKD_PARSE, AKD_ACCOUNTS] message:[NSString stringWithFormat:@"%@, %@", error, error.userInfo]];
+    }
     [ParseController setCurrentAccount:account];
     return YES;
 }
@@ -338,7 +422,7 @@
     BOOL success = [account signUp:&error];
     if (error)
     {
-        [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeError methodType:AKMethodTypeCreator customCategories:@[AKD_ACCOUNTS, AKD_PARSE] message:[NSString stringWithFormat:@"%@, %@", error, error.userInfo]];
+        [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeError methodType:AKMethodTypeCreator customCategories:@[AKD_PARSE, AKD_ACCOUNTS] message:[NSString stringWithFormat:@"%@, %@", error, error.userInfo]];
     }
     if (!success)
     {
@@ -346,6 +430,11 @@
         return NO;
     }
     
+    [PFCloud callFunction:CLOUDCODE_FUNCTION_ACCOUNTDIDLOGIN withParameters:@{CLOUDCODE_PARAM_IPADDRESS:[AKSystemInfo publicIpAddress]} error:&error];
+    if (error)
+    {
+        [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeError methodType:AKMethodTypeAction customCategories:@[AKD_PARSE, AKD_ACCOUNTS] message:[NSString stringWithFormat:@"%@, %@", error, error.userInfo]];
+    }
     [ParseController setCurrentAccount:account];
     return YES;
 }
@@ -354,53 +443,67 @@
 {
     [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeAction customCategories:@[AKD_PARSE, AKD_ACCOUNTS] message:nil];
     
+    NSError *error;
+    [PFCloud callFunction:CLOUDCODE_FUNCTION_ACCOUNTWILLLOGOUT withParameters:@{CLOUDCODE_PARAM_IPADDRESS:[AKSystemInfo publicIpAddress]} error:&error];
+    if (error)
+    {
+        [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeError methodType:AKMethodTypeAction customCategories:@[AKD_PARSE, AKD_ACCOUNTS] message:[NSString stringWithFormat:@"%@, %@", error, error.userInfo]];
+    }
     [PFUser logOut];
     [ParseController setCurrentAccount:nil];
 }
 
 #pragma mark - // PUBLIC METHODS (Objects) //
 
-+ (void)createObjectWithClass:(NSString *)className block:(void (^)(id <PFObject>))block completion:(void (^)(id <PFObject>))completionBlock
++ (void)fetchObjectsEventually:(PFQuery *)query withCompletion:(void (^)(NSArray *))completionBlock
 {
-    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeCreator customCategories:@[AKD_PARSE] message:nil];
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:nil];
     
-    if (!className)
-    {
-        [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeWarning methodType:AKMethodTypeCreator customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"%@ is nil", stringFromVariable(className)]];
-        return;
-    }
-    
-    PFObject *parseObject = [PFObject objectWithClassName:className];
-    if (block) block((id <PFObject>)parseObject);
-    [ParseController saveObjectEventually:parseObject withCompletion:completionBlock];
+    [ParseController queueQuery:(PFQuery *)query ofType:PFQueryFetchAll withCompletion:completionBlock];
 }
 
-+ (BOOL)setObject:(id)object forKey:(NSString *)key onObject:(id <PFObject>)parseObject
++ (void)fetchObjectEventually:(PFQuery *)query withCompletion:(void (^)(PFObject *))completionBlock
 {
-    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeSetter customCategories:@[AKD_PARSE] message:nil];
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:nil];
     
-    BOOL valid = YES;
-    if (!key)
-    {
-        [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeWarning methodType:AKMethodTypeSetter customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"%@ is nil", stringFromVariable(key)]];
-        valid = NO;
-    }
-    if (!parseObject)
-    {
-        [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeWarning methodType:AKMethodTypeSetter customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"%@ is nil", stringFromVariable(parseObject)]];
-        valid = NO;
-    }
-    if (!valid) return NO;
-    
-    if ([AKGenerics object:object isEqualToObject:[(PFObject *)parseObject objectForKey:key]]) return YES;
-    
-    if (object) [(PFObject *)parseObject setObject:object forKey:key];
-    else [(PFObject *)parseObject removeObjectForKey:key];
-//    [ParseController saveObjectEventually:parseObject withCompletion:nil];
-    return YES;
+    [ParseController queueQuery:(PFQuery *)query ofType:PFQueryFetchFirst withCompletion:completionBlock];
 }
 
-+ (BOOL)addObjects:(NSSet *)objects toRelationWithKey:(NSString *)key onObject:(id <PFObject>)parseObject
++ (void)countObjectsEventually:(PFQuery *)query withCompletion:(void (^)(NSUInteger))completionBlock
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:nil];
+    
+    [ParseController queueQuery:(PFQuery *)query ofType:PFQueryCount withCompletion:completionBlock];
+}
+
++ (void)saveObjectEventually:(PFObject *)object withCompletion:(void (^)(PFObject *))completionBlock
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:nil];
+    
+    [ParseController saveEventually:object withCompletion:completionBlock];
+    
+//    NSMutableArray *unsavedObjects = [ParseController unsavedObjects];
+//    if ([unsavedObjects containsObject:object])
+//    {
+//        if (completionBlock)
+//        {
+//            [[[ParseController objectCompletionBlocks] objectAtIndex:[unsavedObjects indexOfObject:object]] addObject:completionBlock];
+//        }
+//    }
+//    else
+//    {
+//        [unsavedObjects addObject:object];
+//        NSMutableArray *blocks = [NSMutableArray array];
+//        if (completionBlock) [blocks addObject:completionBlock];
+//        [[ParseController objectCompletionBlocks] addObject:blocks];
+//    }
+//    if ([AKSystemInfo isReachable] && ![[ParseController threadSave] isExecuting])
+//    {
+//        [[ParseController threadSave] start];
+//    }
+}
+
++ (BOOL)addObjects:(NSSet *)objects toRelationWithKey:(NSString *)key onObject:(PFObject *)parseObject
 {
     [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeSetter customCategories:@[AKD_PARSE] message:nil];
     
@@ -427,7 +530,7 @@
     if (!valid) return NO;
     
     NSArray *oldObjects;
-    PFRelation *relation = [(PFObject *)parseObject relationForKey:key];
+    PFRelation *relation = [parseObject relationForKey:key];
     if (relation)
     {
         NSError *error;
@@ -447,7 +550,7 @@
     return YES;
 }
 
-+ (BOOL)removeObjects:(NSSet *)objects fromRelationWithKey:(NSString *)key onObject:(id <PFObject>)parseObject
++ (BOOL)removeObjects:(NSSet *)objects fromRelationWithKey:(NSString *)key onObject:(PFObject *)parseObject
 {
     [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeSetter customCategories:@[AKD_PARSE] message:nil];
     
@@ -473,7 +576,7 @@
     if (!valid) return NO;
     
     NSArray *oldObjects;
-    PFRelation *relation = [(PFObject *)parseObject relationForKey:key];
+    PFRelation *relation = [parseObject relationForKey:key];
     if (!relation)
     {
         [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeWarning methodType:AKMethodTypeSetter customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"No %@ for %@ %@", NSStringFromClass([PFRelation class]), stringFromVariable(key), key]];
@@ -500,32 +603,45 @@
 
 #pragma mark - // PUBLIC METHODS (Files) //
 
-+ (void)createFileWithName:(NSString *)name data:(NSData *)data completionBlock:(void (^)(id <PFFile>))completionBlock
++ (void)saveFileEventually:(PFFile *)file withCompletion:(void (^)(PFFile *))completionBlock
 {
-    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeCreator customCategories:@[AKD_PARSE] message:nil];
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:nil];
     
-    if (!data)
-    {
-        [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeWarning methodType:AKMethodTypeCreator customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"%@ is nil", stringFromVariable(data)]];
-        return;
-    }
+    [ParseController saveEventually:file withCompletion:completionBlock];
     
-    PFFile *file;
-    if (!name)
-    {
-        file = [PFFile fileWithData:data];
-    }
-    else if ([ParseController validNameForPFFile:name])
-    {
-        file = [PFFile fileWithName:name data:data];
-    }
-    if (!file)
-    {
-        [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeWarning methodType:AKMethodTypeCreator customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"Could not create %@", stringFromVariable(file)]];
-        return;
-    }
+//    NSMutableArray *unsavedObjects = [ParseController unsavedObjects];
+//    if ([unsavedObjects containsObject:file])
+//    {
+//        if (completionBlock)
+//        {
+//            [[[ParseController objectCompletionBlocks] objectAtIndex:[unsavedObjects indexOfObject:file]] addObject:completionBlock];
+//        }
+//    }
+//    else
+//    {
+//        [unsavedObjects addObject:file];
+//        NSMutableArray *blocks = [NSMutableArray array];
+//        if (completionBlock) [blocks addObject:completionBlock];
+//        [[ParseController objectCompletionBlocks] addObject:blocks];
+//    }
+//    if ([AKSystemInfo isReachable] && ![[ParseController threadSave] isExecuting])
+//    {
+//        [[ParseController threadSave] start];
+//    }
+}
+
+#pragma mark - // PUBLIC METHODS (Cloud Code) //
+
++ (id)callFunction:(NSString *)function withParameters:(NSDictionary *)parameters error:(NSError *)error
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:nil];
     
-    [ParseController saveFileEventually:file withCompletion:completionBlock];
+    id response = [PFCloud callFunction:function withParameters:parameters error:&error];
+    if (error)
+    {
+        [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeError methodType:AKMethodTypeAction customCategories:@[AKD_PARSE, AKD_ACCOUNTS] message:[NSString stringWithFormat:@"%@, %@", error, error.userInfo]];
+    }
+    return response;
 }
 
 #pragma mark - // CATEGORY METHODS //
@@ -552,16 +668,35 @@
 {
     [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeSetup customCategories:@[AKD_PARSE] message:nil];
     
-    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(internetStatusDidChange:) name:NOTIFICATION_INTERNETSTATUS_DID_CHANGE object:nil];
+    [self addObserversToSystemInfo];
 }
 
 - (void)teardown
 {
     [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeSetup customCategories:@[AKD_PARSE] message:nil];
     
-    [[NSNotificationCenter defaultCenter] removeObserver:self name:NOTIFICATION_INTERNETSTATUS_DID_CHANGE object:nil];
+    [self removeObserversFromSystemInfo];
     
     [self.threadSave cancel];
+    [self.threadFetch cancel];
+}
+
+#pragma mark - // PRIVATE METHODS (Observers) //
+
+- (void)addObserversToSystemInfo
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeSetup customCategories:nil message:nil];
+    
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(internetStatusDidChange:) name:NOTIFICATION_INTERNETSTATUS_DID_CHANGE object:nil];
+    [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(publicIpAddressDidChange:) name:NOTIFICATION_PUBLIC_IPADDRESS_DID_CHANGE object:nil];
+}
+
+- (void)removeObserversFromSystemInfo
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeSetup customCategories:nil message:nil];
+    
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:NOTIFICATION_INTERNETSTATUS_DID_CHANGE object:nil];
+    [[NSNotificationCenter defaultCenter] removeObserver:self name:NOTIFICATION_PUBLIC_IPADDRESS_DID_CHANGE object:nil];
 }
 
 #pragma mark - // PRIVATE METHODS (Responders) //
@@ -570,10 +705,34 @@
 {
     [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeUnspecified customCategories:@[AKD_NOTIFICATION_CENTER] message:nil];
     
-    if ([AKSystemInfo isReachable] && self.unsavedObjects.count && ![[ParseController threadSave] isExecuting])
+    if ([AKSystemInfo isReachable])
     {
-        [[ParseController threadSave] start];
+        if (self.unsavedObjects.count && ![[ParseController threadSave] isExecuting])
+        {
+            [[ParseController threadSave] start];
+        }
+        if (self.queuedQueries.count && ![[ParseController threadFetch] isExecuting])
+        {
+            [[ParseController threadFetch] start];
+        }
     }
+}
+
+- (void)publicIpAddressDidChange:(NSNotification *)notification
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeUnspecified customCategories:@[AKD_NOTIFICATION_CENTER] message:nil];
+    
+    NSString *ipAddress = [notification.userInfo objectForKey:NOTIFICATION_OBJECT_KEY];
+    if (ipAddress)
+    {
+        [self.currentInstallation addUniqueObject:ipAddress forKey:PFINSTALLATION_KEY_IPADDRESSES_ALL];
+        [self.currentInstallation setObject:ipAddress forKey:PFINSTALLATION_KEY_IPADDRESS_CURRENT];
+    }
+    else
+    {
+        [self.currentInstallation removeObjectForKey:PFINSTALLATION_KEY_IPADDRESS_CURRENT];
+    }
+    [ParseController saveObjectEventually:self.currentInstallation withCompletion:nil];
 }
 
 #pragma mark - // PRIVATE METHODS (Convenience) //
@@ -585,6 +744,13 @@
     return [[ParseController sharedController] threadSave];
 }
 
++ (NSThread *)threadFetch
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeGetter customCategories:nil message:nil];
+    
+    return [[ParseController sharedController] threadFetch];
+}
+
 + (NSMutableArray *)unsavedObjects
 {
     [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeGetter customCategories:nil message:nil];
@@ -592,11 +758,18 @@
     return [[ParseController sharedController] unsavedObjects];
 }
 
-+ (NSMutableArray *)completionBlocks
++ (NSMutableArray *)queuedQueries
 {
     [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeGetter customCategories:nil message:nil];
     
-    return [[ParseController sharedController] completionBlocks];
+    return [[ParseController sharedController] queuedQueries];
+}
+
++ (NSMutableArray *)objectCompletionBlocks
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeGetter customCategories:nil message:nil];
+    
+    return [[ParseController sharedController] objectCompletionBlocks];
 }
 
 + (PFInstallation *)currentInstallation
@@ -660,23 +833,26 @@
     {
         [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeError methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"%@, %@", error, error.userInfo]];
     }
+    id <Save> object;
+    PFObject *parseObject;
+    PFFile *parseFile;
+    NSMutableArray *blocks;
+    void (^objectCompletionBlock)(PFObject *);
+    void (^fileCompletionBlock)(PFFile *);
     if (saved)
     {
-        id parseObject;
-        NSMutableArray *blocks;
-        void (^objectCompletionBlock)(id <PFObject>);
-        void (^fileCompletionBlock)(id <PFFile>);
         for (int i = 0; i < self.unsavedObjects.count; i++)
         {
-            parseObject = [self.unsavedObjects objectAtIndex:i];
-            blocks = [self.completionBlocks objectAtIndex:i];
+            blocks = [self.objectCompletionBlocks objectAtIndex:i];
             if (blocks.count)
             {
+                object = [self.unsavedObjects objectAtIndex:i];
                 for (int j = 0; j < blocks.count; j++)
                 {
-                    if ([parseObject isKindOfClass:[PFObject class]])
+                    if ([object isKindOfClass:[PFObject class]])
                     {
-                        if ([(PFObject *)parseObject isDirty])
+                        parseObject = (PFObject *)object;
+                        if ([parseObject isDirty])
                         {
                             [parseObject save:&error];
                             if (error)
@@ -685,62 +861,53 @@
                             }
                         }
                         objectCompletionBlock = [blocks objectAtIndex:j];
-                        objectCompletionBlock((id <PFObject>)parseObject);
+                        objectCompletionBlock(parseObject);
                     }
-                    else if ([parseObject isKindOfClass:[PFFile class]])
+                    else if ([object isKindOfClass:[PFFile class]])
                     {
+                        parseFile = (PFFile *)object;
                         fileCompletionBlock = [blocks objectAtIndex:j];
-                        fileCompletionBlock((id <PFFile>)parseObject);
+                        fileCompletionBlock(parseFile);
                     }
                 }
             }
         }
-        [self.completionBlocks removeAllObjects];
+        [self.objectCompletionBlocks removeAllObjects];
         [self.unsavedObjects removeAllObjects];
     }
     else
     {
-        id parseObject;
-        NSMutableArray *blocks;
-        void (^objectCompletionBlock)(id <PFObject>);
-        void (^fileCompletionBlock)(id <PFFile>);
         NSUInteger i = 0;
         while (i < self.unsavedObjects.count)
         {
-            parseObject = [self.unsavedObjects objectAtIndex:i];
-            saved = [parseObject save:&error];
+            object = [self.unsavedObjects objectAtIndex:i];
+            saved = [object save:&error];
             if (error)
             {
                 [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeError methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"%@, %@", error, error.userInfo]];
             }
             if (saved)
             {
-                blocks = [self.completionBlocks objectAtIndex:i];
+                blocks = [self.objectCompletionBlocks objectAtIndex:i];
                 if (blocks.count)
                 {
                     for (int j = 0; j < blocks.count; j++)
                     {
-                        if ([parseObject isKindOfClass:[PFObject class]])
+                        if ([object isKindOfClass:[PFObject class]])
                         {
-                            if ([(PFObject *)parseObject isDirty])
-                            {
-                                [parseObject save:&error];
-                                if (error)
-                                {
-                                    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeError methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"%@, %@", error, error.userInfo]];
-                                }
-                            }
+                            parseObject = (PFObject *)object;
                             objectCompletionBlock = [blocks objectAtIndex:j];
-                            objectCompletionBlock((id <PFObject>)parseObject);
+                            objectCompletionBlock(parseObject);
                         }
-                        else if ([parseObject isKindOfClass:[PFFile class]])
+                        else if ([object isKindOfClass:[PFFile class]])
                         {
+                            parseFile = (PFFile *)object;
                             fileCompletionBlock = [blocks objectAtIndex:j];
-                            fileCompletionBlock((id <PFFile>)parseObject);
+                            fileCompletionBlock(parseFile);
                         }
                     }
                 }
-                [self.completionBlocks removeObject:blocks];
+                [self.objectCompletionBlocks removeObject:blocks];
                 [self.unsavedObjects removeObject:parseObject];
             }
             else
@@ -757,7 +924,7 @@
     [self setThreadSave:nil];
 }
 
-+ (void)saveObjectEventually:(PFObject *)object withCompletion:(void (^)(PFObject *))completionBlock
++ (void)saveEventually:(id)object withCompletion:(void (^)(id))completionBlock
 {
     [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:nil];
     
@@ -766,7 +933,7 @@
     {
         if (completionBlock)
         {
-            [[[ParseController completionBlocks] objectAtIndex:[unsavedObjects indexOfObject:object]] addObject:completionBlock];
+            [[[ParseController objectCompletionBlocks] objectAtIndex:[unsavedObjects indexOfObject:object]] addObject:completionBlock];
         }
     }
     else
@@ -774,7 +941,7 @@
         [unsavedObjects addObject:object];
         NSMutableArray *blocks = [NSMutableArray array];
         if (completionBlock) [blocks addObject:completionBlock];
-        [[ParseController completionBlocks] addObject:blocks];
+        [[ParseController objectCompletionBlocks] addObject:blocks];
     }
     if ([AKSystemInfo isReachable] && ![[ParseController threadSave] isExecuting])
     {
@@ -782,28 +949,117 @@
     }
 }
 
-+ (void)saveFileEventually:(PFFile *)file withCompletion:(void (^)(PFFile *))completionBlock
+#pragma mark - // PRIVATE METHODS (Fetch) //
+
+- (void)fetch
 {
     [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:nil];
     
-    NSMutableArray *unsavedObjects = [ParseController unsavedObjects];
-    if ([unsavedObjects containsObject:file])
+    NSDictionary *dictionary;
+    PFQueryType queryType;
+    PFQuery *query;
+    void (^fetchAllCompletionBlock)(NSArray *);
+    void (^fetchFirstCompletionBlock)(PFObject *);
+    void (^countCompletionBlock)(NSUInteger);
+    NSError *error;
+    NSArray *foundObjects;
+    PFObject *foundObject;
+    NSUInteger count;
+    NSUInteger i = 0;
+    while (i < self.queuedQueries.count)
     {
-        if (completionBlock)
+        dictionary = [self.queuedQueries objectAtIndex:i];
+        query = [dictionary objectForKey:QUEUEDQUERY_KEY_QUERY];
+        if (!query)
         {
-            [[[ParseController completionBlocks] objectAtIndex:[unsavedObjects indexOfObject:file]] addObject:completionBlock];
+            [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeWarning methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"%@ is nil", stringFromVariable(query)]];
+            i++;
+            continue;
         }
+        
+        queryType = (PFQueryType)[[dictionary objectForKey:QUEUEDQUERY_KEY_TYPE] integerValue];
+        if (queryType == PFQueryFetchAll)
+        {
+            fetchAllCompletionBlock = [dictionary objectForKey:QUEUEDQUERY_KEY_COMPLETION];
+            if (!fetchAllCompletionBlock)
+            {
+                [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeWarning methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"%@ is nil", stringFromVariable(fetchAllCompletionBlock)]];
+                i++;
+                continue;
+            }
+            
+            foundObjects = [query findObjects:&error];
+            if (error)
+            {
+                [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeError methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"%@, %@", error, error.userInfo]];
+            }
+            if (!foundObjects)
+            {
+                [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeWarning methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:@"Could not fetch objects"];
+            }
+            fetchAllCompletionBlock(foundObjects);
+        }
+        else if (queryType == PFQueryFetchFirst)
+        {
+            fetchFirstCompletionBlock = [dictionary objectForKey:QUEUEDQUERY_KEY_COMPLETION];
+            if (!fetchFirstCompletionBlock)
+            {
+                [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeWarning methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"%@ is nil", stringFromVariable(fetchFirstCompletionBlock)]];
+                i++;
+                continue;
+            }
+            
+            foundObject = [query getFirstObject:&error];
+            if (error)
+            {
+                [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeError methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"%@, %@", error, error.userInfo]];
+            }
+            fetchFirstCompletionBlock(foundObject);
+        }
+        else if (queryType == PFQueryCount)
+        {
+            countCompletionBlock = [dictionary objectForKey:QUEUEDQUERY_KEY_COMPLETION];
+            if (!countCompletionBlock)
+            {
+                [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeWarning methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"%@ is nil", stringFromVariable(countCompletionBlock)]];
+                i++;
+                continue;
+            }
+            
+            count = [query countObjects:&error];
+            if (error)
+            {
+                [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeError methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"%@, %@", error, error.userInfo]];
+            }
+            countCompletionBlock(count);
+        }
+        else
+        {
+            [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeWarning methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"Unknown %@", stringFromVariable(queryType)]];
+            i++;
+            continue;
+        }
+        
+        [self.queuedQueries removeObject:dictionary];
     }
-    else
+    if (self.queuedQueries.count)
     {
-        [unsavedObjects addObject:file];
-        NSMutableArray *blocks = [NSMutableArray array];
-        if (completionBlock) [blocks addObject:completionBlock];
-        [[ParseController completionBlocks] addObject:blocks];
+        [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeNotice methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"Could not %@ %lu queries", NSStringFromSelector(@selector(fetch)), (unsigned long)self.queuedQueries.count]];
     }
-    if ([AKSystemInfo isReachable] && ![[ParseController threadSave] isExecuting])
+    [[ParseController threadFetch] cancel];
+    [self setThreadFetch:nil];
+}
+
++ (void)queueQuery:(PFQuery *)query ofType:(PFQueryType)queryType withCompletion:(id)completionBlock
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:nil];
+    
+    NSNumber *queryNumber = [NSNumber numberWithInteger:queryType];
+    NSDictionary *dictionary = [NSDictionary dictionaryWithObjects:@[queryNumber, query, completionBlock] forKeys:@[QUEUEDQUERY_KEY_TYPE, QUEUEDQUERY_KEY_QUERY, QUEUEDQUERY_KEY_COMPLETION]];
+    [[ParseController queuedQueries] addObject:dictionary];
+    if ([AKSystemInfo isReachable] && ![[ParseController threadFetch] isExecuting])
     {
-        [[ParseController threadSave] start];
+        [[ParseController threadFetch] start];
     }
 }
 

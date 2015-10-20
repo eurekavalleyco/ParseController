@@ -11,21 +11,13 @@
 #pragma mark - // IMPORTS (Public) //
 
 #import <Foundation/Foundation.h>
+#import "MIMETypes.h"
+#import <Parse/PFUser.h>
+#import <Parse/PFObject.h>
+#import <Parse/PFFile.h>
+#import <Parse/PFQuery.h>
 
 #pragma mark - // PROTOCOLS //
-
-@protocol PFObject <NSObject>
-- (NSString *)objectId;
-- (NSDate *)createdAt;
-@end
-
-@protocol PFFile <NSObject>
-@end
-
-@protocol AccountProtocol <PFObject>
-- (NSString *)accountId;
-- (NSString *)username;
-@end
 
 #pragma mark - // DEFINITIONS (Public) //
 
@@ -48,6 +40,7 @@
 
 // INSTALLATION //
 
++ (NSString *)installationId;
 + (NSArray *)channels;
 + (void)setChannels:(NSArray *)channels;
 
@@ -60,20 +53,26 @@
 
 // ACCOUNTS //
 
-+ (id <AccountProtocol>)currentAccount;
++ (PFUser *)currentAccount;
 + (BOOL)signInWithUsername:(NSString *)username password:(NSString *)password;
 + (BOOL)createAccountWithUsername:(NSString *)username email:(NSString *)email password:(NSString *)password userInfo:(NSDictionary *)userInfo;
 + (void)signOut;
 
 // OBJECTS //
 
-+ (void)createObjectWithClass:(NSString *)className block:(void (^)(id <PFObject>))block completion:(void (^)(id <PFObject>))completionBlock;
-+ (BOOL)setObject:(id)object forKey:(NSString *)key onObject:(id <PFObject>)parseObject;
-+ (BOOL)addObjects:(NSSet *)objects toRelationWithKey:(NSString *)key onObject:(id <PFObject>)parseObject;
-+ (BOOL)removeObjects:(NSSet *)objects fromRelationWithKey:(NSString *)key onObject:(id <PFObject>)parseObject;
++ (void)fetchObjectsEventually:(PFQuery *)query withCompletion:(void (^)(NSArray *))completionBlock;
++ (void)fetchObjectEventually:(PFQuery *)query withCompletion:(void (^)(PFObject *))completionBlock;
++ (void)countObjectsEventually:(PFQuery *)query withCompletion:(void (^)(NSUInteger))completionBlock;
++ (void)saveObjectEventually:(PFObject *)object withCompletion:(void (^)(PFObject *))completionBlock;
++ (BOOL)addObjects:(NSSet *)objects toRelationWithKey:(NSString *)key onObject:(PFObject *)parseObject;
++ (BOOL)removeObjects:(NSSet *)objects fromRelationWithKey:(NSString *)key onObject:(PFObject *)parseObject;
 
 // FILES //
 
-+ (void)createFileWithName:(NSString *)name data:(NSData *)data completionBlock:(void (^)(id <PFFile>))completionBlock;
++ (void)saveFileEventually:(PFFile *)file withCompletion:(void (^)(PFFile *))completionBlock;
+
+// CLOUD CODE //
+
++ (id)callFunction:(NSString *)function withParameters:(NSDictionary *)parameters error:(NSError *)error;
 
 @end
