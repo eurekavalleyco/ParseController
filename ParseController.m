@@ -28,6 +28,7 @@
 
 #define CLOUDCODE_FUNCTION_ACCOUNTDIDLOGIN @"accountDidLogIn"
 #define CLOUDCODE_FUNCTION_ACCOUNTWILLLOGOUT @"accountWillLogOut"
+
 #define CLOUDCODE_PARAM_IPADDRESS @"ipAddress"
 
 #define PFINSTALLATION_KEY_PUSHNOTIFICATIONSON @"pushNotificationsOn"
@@ -41,6 +42,10 @@
 #define QUEUEDQUERY_KEY_QUERY @"query"
 #define QUEUEDQUERY_KEY_COMPLETION @"completion"
 
+#define QUEUEDFUNCTION_KEY_FUNCTIONNAME @"functionName"
+#define QUEUEDFUNCTION_KEY_PARAMETERS @"parameters"
+#define QUEUEDFUNCTION_KEY_COMPLETIONBLOCK @"completionBlock"
+
 typedef enum {
     PFQueryFetchAll,
     PFQueryFetchFirst,
@@ -50,9 +55,11 @@ typedef enum {
 @interface ParseController ()
 @property (nonatomic, strong) NSThread *threadSave;
 @property (nonatomic, strong) NSThread *threadFetch;
+@property (nonatomic, strong) NSThread *threadCall;
 @property (nonatomic, strong) NSMutableArray *unsavedObjects;
 @property (nonatomic, strong) NSMutableArray *queuedQueries;
 @property (nonatomic, strong) NSMutableArray *objectCompletionBlocks;
+@property (nonatomic, strong) NSMutableArray *queuedFunctions;
 @property (nonatomic, strong) PFInstallation *currentInstallation;
 @property (nonatomic, strong) PFUser *currentAccount;
 
@@ -76,9 +83,11 @@ typedef enum {
 
 + (NSThread *)threadSave;
 + (NSThread *)threadFetch;
++ (NSThread *)threadCall;
 + (NSMutableArray *)unsavedObjects;
 + (NSMutableArray *)queuedQueries;
 + (NSMutableArray *)objectCompletionBlocks;
++ (NSMutableArray *)queuedFunctions;
 + (PFInstallation *)currentInstallation;
 + (void)setCurrentAccount:(PFUser *)currentAccount;
 
@@ -95,6 +104,10 @@ typedef enum {
 - (void)fetch;
 + (void)queueQuery:(PFQuery *)query ofType:(PFQueryType)queryType withCompletion:(id)completionBlock;
 
+// CALL //
+
+- (void)call;
+
 @end
 
 @implementation ParseController
@@ -103,9 +116,11 @@ typedef enum {
 
 @synthesize threadSave = _threadSave;
 @synthesize threadFetch = _threadFetch;
+@synthesize threadCall = _threadCall;
 @synthesize unsavedObjects = _unsavedObjects;
 @synthesize queuedQueries = _queuedQueries;
 @synthesize objectCompletionBlocks = _objectCompletionBlocks;
+@synthesize queuedFunctions = _queuedFunctions;
 @synthesize currentInstallation = _currentInstallation;
 @synthesize currentAccount = _currentAccount;
 
@@ -129,6 +144,17 @@ typedef enum {
     _threadFetch = [[NSThread alloc] initWithTarget:self selector:@selector(fetch) object:nil];
     [_threadFetch setName:[NSString stringWithFormat:@"%@.%@.%@", [AKSystemInfo bundleIdentifier], NSStringFromClass([self class]), NSStringFromSelector(@selector(threadFetch))]];
     return _threadFetch;
+}
+
+- (NSThread *)threadCall
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeGetter customCategories:nil message:nil];
+    
+    if (_threadCall) return _threadCall;
+    
+    _threadCall = [[NSThread alloc] initWithTarget:self selector:@selector(call) object:nil];
+    [_threadCall setName:[NSString stringWithFormat:@"%@.%@.%@", [AKSystemInfo bundleIdentifier], NSStringFromClass([self class]), NSStringFromSelector(@selector(threadCall))]];
+    return _threadCall;
 }
 
 - (NSMutableArray *)unsavedObjects
@@ -159,6 +185,16 @@ typedef enum {
     
     _objectCompletionBlocks = [NSMutableArray array];
     return _objectCompletionBlocks;
+}
+
+- (NSMutableArray *)queuedFunctions
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeGetter customCategories:nil message:nil];
+    
+    if (_queuedFunctions) return _queuedFunctions;
+    
+    _queuedFunctions = [NSMutableArray array];
+    return _queuedFunctions;
 }
 
 - (PFInstallation *)currentInstallation
@@ -632,16 +668,25 @@ typedef enum {
 
 #pragma mark - // PUBLIC METHODS (Cloud Code) //
 
-+ (id)callFunction:(NSString *)function withParameters:(NSDictionary *)parameters error:(NSError *)error
++ (void)performFunctionEventually:(NSString *)functionName withParameters:(NSDictionary *)parameters completion:(void (^)(id))completionBlock
 {
     [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:nil];
     
-    id response = [PFCloud callFunction:function withParameters:parameters error:&error];
-    if (error)
+    if (!functionName)
     {
-        [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeError methodType:AKMethodTypeAction customCategories:@[AKD_PARSE, AKD_ACCOUNTS] message:[NSString stringWithFormat:@"%@, %@", error, error.userInfo]];
+        [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeNotice methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"%@ cannot be nil", stringFromVariable(functionName)]];
+        return;
     }
-    return response;
+    
+    NSMutableArray *queuedFunctions = [ParseController queuedFunctions];
+    NSMutableDictionary *dictionary = [NSMutableDictionary dictionaryWithObject:functionName forKey:QUEUEDFUNCTION_KEY_FUNCTIONNAME];
+    if (parameters) [dictionary setObject:parameters forKey:QUEUEDFUNCTION_KEY_PARAMETERS];
+    if (completionBlock) [dictionary setObject:completionBlock forKey:QUEUEDFUNCTION_KEY_COMPLETIONBLOCK];
+    [queuedFunctions addObject:dictionary];
+    if ([AKSystemInfo isReachable] && ![[ParseController threadCall] isExecuting])
+    {
+        [[ParseController threadCall] start];
+    }
 }
 
 #pragma mark - // CATEGORY METHODS //
@@ -751,6 +796,13 @@ typedef enum {
     return [[ParseController sharedController] threadFetch];
 }
 
++ (NSThread *)threadCall
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeGetter customCategories:nil message:nil];
+    
+    return [[ParseController sharedController] threadCall];
+}
+
 + (NSMutableArray *)unsavedObjects
 {
     [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeGetter customCategories:nil message:nil];
@@ -770,6 +822,13 @@ typedef enum {
     [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeGetter customCategories:nil message:nil];
     
     return [[ParseController sharedController] objectCompletionBlocks];
+}
+
++ (NSMutableArray *)queuedFunctions
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeGetter customCategories:nil message:nil];
+    
+    return [[ParseController sharedController] queuedFunctions];
 }
 
 + (PFInstallation *)currentInstallation
@@ -1061,6 +1120,48 @@ typedef enum {
     {
         [[ParseController threadFetch] start];
     }
+}
+
+#pragma mark - // PRIVATE METHODS (Call) //
+
+- (void)call
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:nil];
+    
+    NSDictionary *dictionary;
+    NSString *functionName;
+    NSDictionary *parameters;
+    void (^completionblock)(id);
+    NSError *error;
+    NSUInteger i = 0;
+    while (i < self.queuedFunctions.count)
+    {
+        dictionary = [self.queuedFunctions objectAtIndex:i];
+        functionName = [dictionary objectForKey:QUEUEDFUNCTION_KEY_FUNCTIONNAME];
+        if (!functionName)
+        {
+            [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeWarning methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"%@ is nil", stringFromVariable(functionName)]];
+            i++;
+            continue;
+        }
+        
+        parameters = [dictionary objectForKey:QUEUEDFUNCTION_KEY_PARAMETERS];
+        completionblock = [dictionary objectForKey:QUEUEDFUNCTION_KEY_COMPLETIONBLOCK];
+        
+        id response = [PFCloud callFunction:functionName withParameters:parameters error:&error];
+        if (error)
+        {
+            [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeError methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"%@, %@", error, error.userInfo]];
+        }
+        if (completionblock) completionblock(response);
+        [self.queuedFunctions removeObject:dictionary];
+    }
+    if (self.queuedFunctions.count)
+    {
+        [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeNotice methodType:AKMethodTypeUnspecified customCategories:@[AKD_PARSE] message:[NSString stringWithFormat:@"Could not %@ %lu functions", NSStringFromSelector(@selector(call)), (unsigned long)self.queuedFunctions.count]];
+    }
+    [[ParseController threadCall] cancel];
+    [self setThreadCall:nil];
 }
 
 @end

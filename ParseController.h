@@ -73,6 +73,6 @@
 
 // CLOUD CODE //
 
-+ (id)callFunction:(NSString *)function withParameters:(NSDictionary *)parameters error:(NSError *)error;
++ (void)performFunctionEventually:(NSString *)functionName withParameters:(NSDictionary *)parameters completion:(void (^)(id))completionBlock;
 
 @end
