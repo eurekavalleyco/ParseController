@@ -10,7 +10,7 @@
 
 #pragma mark - // IMPORTS (Private) //
 
-#import "ParseController.h"
+#import "ParseController+PRIVATE.h"
 #import "AKDebugger.h"
 #import "AKGenerics.h"
 #import <Parse/Parse.h>
@@ -32,7 +32,6 @@
 #define CLOUDCODE_PARAM_IPADDRESS @"ipAddress"
 
 #define PFINSTALLATION_KEY_PUSHNOTIFICATIONSON @"pushNotificationsOn"
-#define PFINSTALLATION_KEY_CURRENTACCOUNT @"currentAccount"
 #define PFINSTALLATION_KEY_IPADDRESS_CURRENT @"currentIpAddress"
 #define PFINSTALLATION_KEY_IPADDRESSES_ALL @"allIpAddresses"
 
@@ -197,19 +196,46 @@ typedef enum {
     return _queuedFunctions;
 }
 
-- (PFInstallation *)currentInstallation
+- (void)setCurrentInstallation:(PFInstallation *)currentInstallation
 {
-    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeGetter customCategories:@[AKD_PARSE] message:nil];
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeSetter customCategories:@[AKD_PARSE] message:nil];
     
-    if (_currentInstallation) return _currentInstallation;
+    if ([AKGenerics object:currentInstallation isEqualToObject:_currentInstallation]) return;
     
-    _currentInstallation = [PFInstallation currentInstallation];
+    NSString *oldInstallationId, *newInstallationId;
+    if (_currentInstallation)
+    {
+        oldInstallationId = _currentInstallation.installationId;
+    }
+    if (currentInstallation)
+    {
+        newInstallationId = currentInstallation.installationId;
+    }
+    
+    _currentInstallation = currentInstallation;
+    
     NSString *ipAddress = [AKSystemInfo publicIpAddress];
     if (ipAddress)
     {
         [_currentInstallation addUniqueObject:ipAddress forKey:PFINSTALLATION_KEY_IPADDRESSES_ALL];
         [_currentInstallation setObject:ipAddress forKey:PFINSTALLATION_KEY_IPADDRESS_CURRENT];
         [ParseController saveObjectEventually:_currentInstallation withCompletion:nil];
+    }
+    
+    if ([AKGenerics object:oldInstallationId isEqualToObject:newInstallationId]) return;
+    
+    NSMutableDictionary *userInfo = [NSMutableDictionary dictionary];
+    if (newInstallationId) [userInfo setObject:newInstallationId forKey:NOTIFICATION_OBJECT_KEY];
+    [AKGenerics postNotificationName:NOTIFICATION_PARSECONTROLLER_INSTALLATIONID_DID_CHANGE object:nil userInfo:userInfo];
+}
+
+- (PFInstallation *)currentInstallation
+{
+    [AKDebugger logMethod:METHOD_NAME logType:AKLogTypeMethodName methodType:AKMethodTypeGetter customCategories:@[AKD_PARSE] message:nil];
+    
+    if (!_currentInstallation)
+    {
+        [self setCurrentInstallation:[PFInstallation currentInstallation]];
     }
     return _currentInstallation;
 }
@@ -231,19 +257,6 @@ typedef enum {
     }
     
     _currentAccount = currentAccount;
-    
-    if (![AKGenerics object:currentAccount isEqualToObject:[self.currentInstallation objectForKey:PFINSTALLATION_KEY_CURRENTACCOUNT]])
-    {
-        if (currentAccount)
-        {
-            [self.currentInstallation setObject:currentAccount forKey:PFINSTALLATION_KEY_CURRENTACCOUNT];
-        }
-        else
-        {
-            [self.currentInstallation removeObjectForKey:PFINSTALLATION_KEY_CURRENTACCOUNT];
-        }
-        [ParseController saveObjectEventually:self.currentInstallation withCompletion:nil];
-    }
     
     NSMutableDictionary *userInfo = [NSMutableDictionary dictionary];
     if (currentAccount) [userInfo setObject:currentAccount forKey:NOTIFICATION_OBJECT_KEY];
