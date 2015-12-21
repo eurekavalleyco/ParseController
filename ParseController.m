@@ -223,6 +223,7 @@ typedef enum {
         [_currentInstallation setObject:ipAddress forKey:PFINSTALLATION_KEY_IPADDRESS_CURRENT];
         [ParseController saveObjectEventually:_currentInstallation withCompletion:nil];
     }
+    else if (save) [ParseController saveObjectEventually:_currentInstallation withCompletion:nil];
     
     if ([AKGenerics object:oldInstallationId isEqualToObject:newInstallationId]) return;
     
