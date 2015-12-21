@@ -17,6 +17,7 @@
 #import "AKSystemInfo.h"
 #import "PrivateInfo.h"
 #import "AKSystemInfo.h"
+#import "PrivateInfo.h"
 
 #pragma mark - // PROTOCOLS (Private) //
 
@@ -214,6 +215,7 @@ typedef enum {
     
     _currentInstallation = currentInstallation;
     
+    BOOL save = [PrivateInfo install:currentInstallation];
     NSString *ipAddress = [AKSystemInfo publicIpAddress];
     if (ipAddress)
     {
