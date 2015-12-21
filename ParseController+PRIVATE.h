@@ -17,3 +17,5 @@
 #pragma mark - // DEFINITIONS (Public) //
 
 #define NOTIFICATION_PARSECONTROLLER_INSTALLATIONID_DID_CHANGE @"kNotificationParseControllerInstallationIdDidChange"
+
+#define PARSE_KEY_INSTALLATION_DEVICEHASH @"deviceHash"
